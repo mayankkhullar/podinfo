@@ -1,0 +1,191 @@
+version: 2.1
+
+orbs:
+  aws-cli: circleci/aws-cli@4.0
+
+executors:
+  docker-executor:
+    docker:
+      - image: cimg/base:stable
+    resource_class: large
+
+jobs:
+  build:
+    executor: docker-executor
+    steps:
+      # Step 1: Checkout application code
+      - checkout
+
+      # Step 2: Setup remote Docker for building
+      - setup_remote_docker:
+          docker_layer_caching: true
+
+      # Step 3: Set repository name and image tag
+      - run:
+          name: Set build variables
+          command: |
+            # Convert repo name to lowercase and get basename
+            REPO_FULL=$(echo "${CIRCLE_PROJECT_USERNAME}/${CIRCLE_PROJECT_REPONAME}" | tr '[:upper:]' '[:lower:]')
+            REPO_NAME=$(basename "$REPO_FULL")
+            IMAGE_TAG="${CIRCLE_BUILD_NUM}"
+
+            # Save to environment file
+            echo "export REPO_NAME=${REPO_NAME}" >> $BASH_ENV
+            echo "export IMAGE_TAG=${IMAGE_TAG}" >> $BASH_ENV
+            echo "export DOCKER_REGISTRY=${DOCKER_REGISTRY:-983894348296.dkr.ecr.us-west-2.amazonaws.com}" >> $BASH_ENV
+
+            echo "Repository: ${REPO_NAME}"
+            echo "Image Tag: ${IMAGE_TAG}"
+
+      # Step 4: Install AWS CLI
+      - aws-cli/setup
+
+      # Step 5: Assume AWS role and login to ECR
+      - run:
+          name: Assume AWS role and login to ECR
+          command: |
+            # Assume role (if using role assumption)
+            # aws sts assume-role ...
+
+            # Login to ECR registries (for pulling base images)
+            aws ecr get-login-password --region us-west-2 | \
+              docker login --username AWS --password-stdin 983894348296.dkr.ecr.us-west-2.amazonaws.com
+
+            aws ecr get-login-password --region us-west-2 | \
+              docker login --username AWS --password-stdin 550864301940.dkr.ecr.us-west-2.amazonaws.com
+
+      # Step 6: Inject NuGet config (if .NET app)
+      - run:
+          name: Inject NuGet config
+          command: |
+            if [ -f "nuget.config" ]; then
+              echo "NuGet config exists, injecting Azure DevOps PAT"
+              # Replace PAT placeholder if needed
+              # sed -i "s/{{AZURE_DEVOPS_PAT}}/${AZURE_DEVOPS_PAT}/g" nuget.config
+            fi
+
+      # Step 7: Build application Docker image
+      - run:
+          name: Build application Docker image
+          command: |
+            source $BASH_ENV
+
+            echo "Building ${DOCKER_REGISTRY}/${REPO_NAME}:${IMAGE_TAG}"
+
+            docker build \
+              -f Dockerfile \
+              -t ${DOCKER_REGISTRY}/${REPO_NAME}:${IMAGE_TAG} \
+              --build-arg ACCESS_TOKEN=${AZURE_DEVOPS_PAT} \
+              .
+
+            echo "Build successful!"
+            docker images | grep ${REPO_NAME}
+
+      # Step 8: Generate image digest/ID
+      - run:
+          name: Generate image digest
+          command: |
+            source $BASH_ENV
+
+            # Find Dockerfile
+            DOCKERFILE="Dockerfile"
+
+            # Create rendered dockerfile
+            cp ${DOCKERFILE} Dockerfile.rendered
+
+            # Extract ARG lines
+            sed -rn 's/^ARG (.*)$/export \1/p' ${DOCKERFILE} > arg.env || true
+
+            # Source args
+            if [ -f arg.env ]; then
+              source arg.env
+            fi
+
+            # Replace ARG variables in rendered dockerfile
+            while IFS= read -r line; do
+              if [ -n "$line" ]; then
+                ARG=$(echo "$line" | sed -rn 's/export (.+)=.*/\1/p')
+                VAL=$(echo "$line" | sed -rn 's/export .+=(.*)/\1/p')
+                sed -i "s|\$$ARG|$VAL|g" Dockerfile.rendered
+              fi
+            done < arg.env
+
+            # Extract COPY/ADD commands
+            grep -iE '^(COPY|ADD)' Dockerfile.rendered | grep -v -- '--from' > file_commands.txt || true
+
+            # Parse source files
+            touch files.txt
+            while IFS= read -r line; do
+              if [ -n "$line" ] && ! echo "$line" | grep -q '\['; then
+                echo "$line" | awk '{for(i=2;i<=NF-1;i++) print $i}' >> files.txt
+              fi
+            done < file_commands.txt
+
+            # Add dockerfile itself
+            echo "${DOCKERFILE}" >> files.txt
+
+            # Remove blank lines and normalize paths
+            sed -i '/^$/d' files.txt
+            sed -i 's|^\([^./]\)|./\1|' files.txt
+
+            echo "Files to hash:"
+            cat files.txt
+
+            # Generate hash
+            IMAGE_ID=$(find ./ -type f | sort | grep -iaf files.txt 2>/dev/null | \
+              xargs sha1sum 2>/dev/null | sha1sum | cut -d ' ' -f 1 || echo "no-files-matched" | sha1sum | cut -d ' ' -f 1)
+
+            echo "Image ID: ${IMAGE_ID}"
+            echo "export IMAGE_ID=${IMAGE_ID}" >> $BASH_ENV
+
+      # Step 9: Build tests Docker image (if exists)
+      - run:
+          name: Build tests Docker image
+          command: |
+            source $BASH_ENV
+
+            if [ -f "Tests.Integration.Dockerfile" ]; then
+              echo "Building test image"
+              docker build \
+                -f Tests.Integration.Dockerfile \
+                -t ${DOCKER_REGISTRY}/${REPO_NAME}.tests:${IMAGE_TAG} \
+                --build-arg ACCESS_TOKEN=${AZURE_DEVOPS_PAT} \
+                .
+
+              echo "Test image built successfully"
+            else
+              echo "No test dockerfile found, skipping"
+            fi
+
+      # Step 10: Save image info for later jobs
+      - run:
+          name: Save build artifacts info
+          command: |
+            source $BASH_ENV
+            mkdir -p /tmp/artifacts
+            cat > /tmp/artifacts/build-info.txt <<EOF
+            REPO_NAME=${REPO_NAME}
+            IMAGE_TAG=${IMAGE_TAG}
+            IMAGE_ID=${IMAGE_ID}
+            DOCKER_REGISTRY=${DOCKER_REGISTRY}
+            BUILD_SHA=${CIRCLE_SHA1}
+            BUILD_NUM=${CIRCLE_BUILD_NUM}
+            EOF
+            cat /tmp/artifacts/build-info.txt
+
+      - persist_to_workspace:
+          root: /tmp/artifacts
+          paths:
+            - build-info.txt
+
+workflows:
+  build-only:
+    jobs:
+      - build:
+          context:
+            - aws-credentials
+          filters:
+            branches:
+              only:
+                - main
+                - develop
