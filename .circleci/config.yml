@@ -188,4 +188,5 @@ workflows:
             branches:
               only:
                 - main
+                - master
                 - develop
