@@ -38,7 +38,7 @@ jobs:
             echo "Image Tag: ${IMAGE_TAG}"
 
       # Step 4: Install AWS CLI
-      - aws-cli/setup
+      #- aws-cli/setup
 
       # Step 5: Assume AWS role and login to ECR
 #      - run:
