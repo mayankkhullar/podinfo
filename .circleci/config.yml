@@ -41,28 +41,28 @@ jobs:
       - aws-cli/setup
 
       # Step 5: Assume AWS role and login to ECR
-      - run:
-          name: Assume AWS role and login to ECR
-          command: |
-            # Assume role (if using role assumption)
-            # aws sts assume-role ...
+#      - run:
+#          name: Assume AWS role and login to ECR
+#          command: |
+#            # Assume role (if using role assumption)
+#            # aws sts assume-role ...
+#
+#            # Login to ECR registries (for pulling base images)
+#            aws ecr get-login-password --region us-west-2 | \
+#              docker login --username AWS --password-stdin 983894348296.dkr.ecr.us-west-2.amazonaws.com
+#
+#            aws ecr get-login-password --region us-west-2 | \
+#              docker login --username AWS --password-stdin 550864301940.dkr.ecr.us-west-2.amazonaws.com
 
-            # Login to ECR registries (for pulling base images)
-            aws ecr get-login-password --region us-west-2 | \
-              docker login --username AWS --password-stdin 983894348296.dkr.ecr.us-west-2.amazonaws.com
-
-            aws ecr get-login-password --region us-west-2 | \
-              docker login --username AWS --password-stdin 550864301940.dkr.ecr.us-west-2.amazonaws.com
-
-      # Step 6: Inject NuGet config (if .NET app)
-      - run:
-          name: Inject NuGet config
-          command: |
-            if [ -f "nuget.config" ]; then
-              echo "NuGet config exists, injecting Azure DevOps PAT"
-              # Replace PAT placeholder if needed
-              # sed -i "s/{{AZURE_DEVOPS_PAT}}/${AZURE_DEVOPS_PAT}/g" nuget.config
-            fi
+#      # Step 6: Inject NuGet config (if .NET app)
+#      - run:
+#          name: Inject NuGet config
+#          command: |
+#            if [ -f "nuget.config" ]; then
+#              echo "NuGet config exists, injecting Azure DevOps PAT"
+#              # Replace PAT placeholder if needed
+#              # sed -i "s/{{AZURE_DEVOPS_PAT}}/${AZURE_DEVOPS_PAT}/g" nuget.config
+#            fi
 
       # Step 7: Build application Docker image
       - run:
